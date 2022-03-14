@@ -1,85 +1,609 @@
-// Quartus Prime Verilog Template
-// Single port RAM with single read/write address and initial contents 
-// specified with an initial block
+`define dbg(a) 
+`define dbgINV(a) a
+`define waitforram oldTA == TA
+`define mmuAddrSize 31
+`define ramAddrSize 23
 
-module single_port_ram_with_init
-#(parameter DATA_WIDTH=8, parameter ADDR_WIDTH=6)
-(
-	input [(DATA_WIDTH-1):0] data,
-	input [(ADDR_WIDTH-1):0] addr,
-	input we, clk,
-	output [(DATA_WIDTH-1):0] q
+//`define edpg
+
+// Handles all memory accesses
+module RISCVBasicMMU32(
+  input clk,
+  
+  output reg [31:0]ram_io_w_data = 0,
+  output reg [`ramAddrSize:0]ram_io_addr = 0,
+  input wire [31:0]ram_io_r_data,
+  output reg ram_io_w_we = 0,
+  
+  input wire [`mmuAddrSize:0]addr,
+  input wire [1:0]reqSize,// 0=1b 1=2b 2=4b
+  input wire [31:0]writeData,
+  output reg [31:0]readData = 0,
+  input wire rw,// 0=read; 1=write
+  output reg [`mmuAddrSize:0]rdrAddr = 0,
+  output reg [`mmuAddrSize:0]wrrAddr = 0,
+  
+  input activate,
+  input TA,
+  output reg oldTA = 0
 );
+  
+  reg [7:0]Rcounter = 0;
+  reg [7:0]newRcounter = 0;
+  
+  always @(posedge clk)
+    begin
+      if (activate)
+        begin
+          if (rw == 0)
+            begin
+              // Start Read
+              if (Rcounter == 0 && oldTA != TA)
+                begin
+                  newRcounter = Rcounter + 1;
+                  ram_io_w_we = 0;
+                  ram_io_addr = addr >> 2;// Divide by 4, we use the discarded lower 2 bits later
+                  readData <= 0;
+                end
+              
+              if (Rcounter == 1)
+                begin
+                  newRcounter = Rcounter + 1;
+                  if (reqSize == 0)// 1 byte read
+                    begin
+                      if (addr[1:0] == 0)
+                        begin
+                          readData <= ram_io_r_data[7:0];
+                        end
+                      if (addr[1:0] == 1)
+                        begin
+                          readData <= ram_io_r_data[15:8];
+                        end
+                      if (addr[1:0] == 2)
+                        begin
+                          readData <= ram_io_r_data[23:16];
+                        end
+                      if (addr[1:0] == 3)
+                        begin
+                          readData <= ram_io_r_data[31:24];
+                        end
+                      rdrAddr = addr;
+                      oldTA = TA;
+                      newRcounter = 0;
+                    end
+                  
+                  if (reqSize == 1)// 2 byte read
+                    begin
+                      if (addr[1:0] == 0)
+                        begin
+                          readData[15:8] <= ram_io_r_data[7:0];
+                          readData[7:0] <= ram_io_r_data[15:8];
+                          newRcounter = 0;
+                          rdrAddr = addr;
+                          oldTA = TA;
+                        end
+                      if (addr[1:0] == 1)
+                        begin
+                          readData[15:8] <= ram_io_r_data[15:8];
+                          readData[7:0] <= ram_io_r_data[23:16];
+                          newRcounter = 0;
+                          rdrAddr = addr;
+                          oldTA = TA;
+                        end
+                      if (addr[1:0] == 2)
+                        begin
+                          readData[15:8] <= ram_io_r_data[23:16];
+                          readData[7:0] <= ram_io_r_data[31:24];
+                          newRcounter = 0;
+                          rdrAddr = addr;
+                          oldTA = TA;
+                        end
+                      if (addr[1:0] == 3)
+                        begin
+                          readData[15:8] <= ram_io_r_data[31:24];
+                          //readData[7:0] <= ram_io_r_data[31:24];
+                          // Dont change newRcounter so it will continue to the next cylce
+                        end
+                    end
+                  
+                  if (reqSize == 2)// 4 byte read
+                    begin
+                      if (addr[1:0] == 0)
+                        begin
+                          readData[31:24] <= ram_io_r_data[7:0];
+                          readData[23:16] <= ram_io_r_data[15:8];
+                          readData[15:8] <= ram_io_r_data[23:16];
+                          readData[7:0] <= ram_io_r_data[31:24];
+                          newRcounter = 0;
+                          rdrAddr = addr;
+                      	  oldTA = TA;
+                        end
+                      if (addr[1:0] == 1)
+                        begin
+                          readData[31:24] <= ram_io_r_data[15:8];
+                          readData[23:16] <= ram_io_r_data[23:16];
+                          readData[15:8] <= ram_io_r_data[31:24];
+                          //readData[7:0] <= ram_io_r_data[31:24];
+                          // Dont change newRcounter so it will continue to the next cylce
+                        end
+                      if (addr[1:0] == 2)
+                        begin
+                          readData[31:24] <= ram_io_r_data[23:16];
+                          readData[23:16] <= ram_io_r_data[31:24];
+                          //readData[15:8] <= ram_io_r_data[23:16];
+                          //readData[7:0] <= ram_io_r_data[31:24];
+                          // Dont change newRcounter so it will continue to the next cylce
+                        end
+                      if (addr[1:0] == 3)
+                        begin
+                          readData[31:24] <= ram_io_r_data[31:24];
+                          //readData[23:16] <= ram_io_r_data[15:8];
+                          //readData[15:8] <= ram_io_r_data[23:16];
+                          //readData[7:0] <= ram_io_r_data[31:24];
+                          // Dont change newRcounter so it will continue to the next cylce
+                        end
+                      
+                    end
+                  
+                  if (newRcounter != 0)
+                    begin
+                      ram_io_addr = (addr >> 2)+1;
+                    end
+                end
+              
+              // Cycle 2
+              if (Rcounter == 2)
+                begin
+                  if (reqSize == 1)// 2 byte read
+                    begin
+                      if (addr[1:0] == 3)
+                        begin
+                          readData[7:0] <= ram_io_r_data[7:0];
+                        end
+                    end
+                  
+                  if (reqSize == 2)// 4 byte read
+                    begin
+                      if (addr[1:0] == 1)
+                        begin
+                          readData[7:0] <= ram_io_r_data[7:0];
+                        end
+                      if (addr[1:0] == 2)
+                        begin
+                          readData[15:8] <= ram_io_r_data[7:0];
+                          readData[7:0] <= ram_io_r_data[15:8];
+                        end
+                      if (addr[1:0] == 3)
+                        begin
+                          readData[23:16] <= ram_io_r_data[7:0];
+                          readData[15:8] <= ram_io_r_data[15:8];
+                          readData[7:0] <= ram_io_r_data[23:16];
+                        end
+                      
+                    end
+                  
+                  rdrAddr = addr;
+                  oldTA = TA;
+                  newRcounter = 0;
+                end
+              
+              // Set new Rcounter
+              Rcounter = newRcounter;
+            end
+          else
+            begin
+              // Start Write
+              if (Rcounter == 0 && oldTA != TA)
+                begin
+                  newRcounter = Rcounter + 1;
+                  if (reqSize == 2 && addr[1:0] == 0)
+                    begin
+                      // No need to read memory first as we can directly write
+                      ram_io_addr = addr >> 2;
+                      ram_io_w_data = 0;
+                      ram_io_w_data[31:24] = writeData[7:0];
+                      ram_io_w_data[23:16] = writeData[15:8];
+                      ram_io_w_data[15:8] = writeData[23:16];
+                      ram_io_w_data[7:0] = writeData[31:24];
+                      ram_io_w_we = 1;
+                      wrrAddr = addr;
+                      oldTA = TA;
+                      newRcounter = 0;
+                    end
+                  else
+                    begin
+                      ram_io_w_we = 0;
+                      ram_io_addr = addr >> 2;
+                    end
+                end
+              
+              // Cycle 1
+              if (Rcounter == 1)
+                begin
+                  ram_io_w_data = ram_io_r_data;
+                  newRcounter = Rcounter + 1;
+                  
+                  if (reqSize == 0)
+                    begin
+                      if (addr[1:0] == 0)
+                        begin
+                          ram_io_w_data[7:0] = writeData[7:0];
+                        end
+                      if (addr[1:0] == 1)
+                        begin
+                          ram_io_w_data[15:8] = writeData[7:0];
+                        end
+                      if (addr[1:0] == 2)
+                        begin
+                          ram_io_w_data[23:16] = writeData[7:0];
+                        end
+                      if (addr[1:0] == 3)
+                        begin
+                          ram_io_w_data[31:24] = writeData[7:0];
+                        end
+                      wrrAddr = addr;
+                      oldTA = TA;
+                      newRcounter = 0;
+                      
+                      ram_io_addr = addr >> 2;
+                  	  ram_io_w_we = 1;
+                    end
+                  
+                  if (reqSize == 1)
+                    begin
+                      if (addr[1:0] == 0)
+                        begin
+                          ram_io_w_data[7:0] = writeData[15:8];
+                          ram_io_w_data[15:8] = writeData[7:0];
+                          wrrAddr = addr;
+                          oldTA = TA;
+                          newRcounter = 0;
+                          
+                          ram_io_addr = addr >> 2;
+                  		  ram_io_w_we = 1;
+                        end
+                      if (addr[1:0] == 1)
+                        begin
+                          ram_io_w_data[15:8] = writeData[15:8];
+                          ram_io_w_data[23:16] = writeData[7:0];
+                          wrrAddr = addr;
+                          oldTA = TA;
+                          newRcounter = 0;
+                          
+                          ram_io_addr = addr >> 2;
+                  		  ram_io_w_we = 1;
+                        end
+                      if (addr[1:0] == 2)
+                        begin
+                          ram_io_w_data[23:16] = writeData[15:8];
+                          ram_io_w_data[31:24] = writeData[7:0];
+                          wrrAddr = addr;
+                          oldTA = TA;
+                          newRcounter = 0;
+                          
+                          ram_io_addr = addr >> 2;
+                  		  ram_io_w_we = 1;
+                        end
+                      if (addr[1:0] == 3)
+                        begin
+                          ram_io_w_data[31:24] = writeData[15:8];
+                          //ram_io_w_data[31:24] = writeData[7:0];
+                          /*wrrAddr = addr;
+                          oldTA = TA;
+                          newRcounter = 0;*/
+                          
+                          ram_io_addr = addr >> 2;
+                  		  ram_io_w_we = 1;
+                        end
+                      
+                    end
+                  
+                  if (reqSize == 2)
+                    begin
+                      if (addr[1:0] == 1)
+                        begin
+                          ram_io_w_data[15:8] = writeData[31:24];
+                          ram_io_w_data[23:16] = writeData[23:16];
+                          ram_io_w_data[31:24] = writeData[15:8];
+                          /*wrrAddr = addr;
+                          oldTA = TA;
+                          newRcounter = 0;*/
+                          
+                          ram_io_addr = addr >> 2;
+                  		  ram_io_w_we = 1;
+                        end
+                      if (addr[1:0] == 2)
+                        begin
+                          ram_io_w_data[23:16] = writeData[31:24];
+                          ram_io_w_data[31:24] = writeData[23:16];
+                          //ram_io_w_data[31:24] = writeData[15:8];
+                          /*wrrAddr = addr;
+                          oldTA = TA;
+                          newRcounter = 0;*/
+                          
+                          ram_io_addr = addr >> 2;
+                  		  ram_io_w_we = 1;
+                        end
+                      if (addr[1:0] == 3)
+                        begin
+                          ram_io_w_data[31:24] = writeData[31:24];
+                          //ram_io_w_data[23:16] = writeData[23:16];
+                          //ram_io_w_data[31:24] = writeData[15:8];
+                          /*wrrAddr = addr;
+                          oldTA = TA;
+                          newRcounter = 0;*/
+                          
+                          ram_io_addr = addr >> 2;
+                  		  ram_io_w_we = 1;
+                        end
+                    end
+                end
+              
+              // Cycle 2
+              if (Rcounter == 2)
+                begin
+                  newRcounter = Rcounter + 1;
+                  
+                  ram_io_w_we = 0;
+                  ram_io_addr = (addr >> 2) + 1;
+                end
+              
+              if (Rcounter == 3)
+                begin
+                  newRcounter = 0;
+                  ram_io_w_data = ram_io_r_data;
+                  
+                  if (reqSize == 1)
+                    begin
+                      if (addr[1:0] == 3)
+                        begin
+                          ram_io_w_data[7:0] = writeData[7:0];
+                        end
+                    end
+                  if (reqSize == 2)
+                    begin
+                      if (addr[1:0] == 1)
+                        begin
+                          ram_io_w_data[7:0] = writeData[7:0];
+                        end
+                      if (addr[1:0] == 2)
+                        begin
+                          ram_io_w_data[7:0] = writeData[15:8];
+                          ram_io_w_data[15:8] = writeData[7:0];
+                        end
+                      if (addr[1:0] == 3)
+                        begin
+                          ram_io_w_data[7:0] = writeData[23:16];
+                          ram_io_w_data[15:8] = writeData[15:8];
+                          ram_io_w_data[23:16] = writeData[7:0];
+                        end
+                    end
+                  
+                  ram_io_addr = (addr >> 2)+1;
+                  ram_io_w_we = 1;
+                  
+                  wrrAddr = addr;
+                  oldTA = TA;
+                  newRcounter = 0;
+                end
+              
+              Rcounter = newRcounter;
+            end
+        end
+      else
+        begin
+          Rcounter = 0;
+        end
+    end
+  
+endmodule
 
-	// Declare the RAM variable
-	reg [DATA_WIDTH-1:0] ram[2**ADDR_WIDTH-1:0];
+module RISCVBasicMMU(
+  input clk,
+  
+  output reg [7:0]ram_io_w_data = 0,
+  output reg [`ramAddrSize:0]ram_io_addr = 0,
+  input wire [7:0]ram_io_r_data,
+  output reg ram_io_w_we = 0,
+  
+  input wire [`mmuAddrSize:0]addr,
+  input wire [1:0]reqSize,// 0=1b 1=2b 2=4b
+  input wire [31:0]writeData,
+  output reg [31:0]readData = 0,
+  input wire rw,// 0=read; 1=write
+  output reg [`mmuAddrSize:0]rdrAddr = 0,
+  output reg [`mmuAddrSize:0]wrrAddr = 0,
+  
+  input activate,
+  input TA,
+  output reg oldTA = 0
+);
+  
+  reg [7:0]Rcounter = 0;
+  reg [7:0]newRcounter = 0;
+  
+  always @(posedge clk)
+    begin
+      if (activate)
+        begin
+          if (rw == 0)
+            begin
+              // Start Read
+              if (Rcounter == 0 && oldTA != TA)
+                begin
+                  newRcounter = Rcounter + 1;
+                  ram_io_w_we = 0;
+                  ram_io_addr = addr;
+                  readData = 0;
+                end
 
-	// Variable to hold the registered read address
-	reg [ADDR_WIDTH-1:0] addr_reg;
+              // Cycle 1
+              else if (Rcounter == 1)
+                begin
+                  newRcounter = Rcounter + 1;
+                  if (reqSize == 0)// 1 byte read
+                    begin
+                      readData = ram_io_r_data;
+                      rdrAddr = addr;
+                      oldTA = TA;
+                      newRcounter = 0;
+                    end
+                  else if (reqSize == 1)// 2 byte read
+                    begin
+                      readData[15:8] = ram_io_r_data;
+                      ram_io_addr = addr+1;
+                    end
+                  else if (reqSize == 2)// 4 byte read
+                    begin
+                      readData[31:24] = ram_io_r_data;
+                      ram_io_addr = addr+1;
+                    end
+                end
 
-	// Specify the initial contents.  You can also use the $readmemb
-	// system task to initialize the RAM variable from a text file.
-	// See the $readmemb template page for details.
-	initial 
-	begin : INIT
-		integer i;
-		for(i = 0; i < 2**ADDR_WIDTH; i = i + 1)
-		if (i != 2)
-		begin
-			ram[i] = {DATA_WIDTH{1'b0}};
-		end
-		else
-		begin
-		  ram[i] = 992;
-		end
-	end 
+              // Cycle 2
+              else if (Rcounter == 2)
+                begin
+                  newRcounter = Rcounter + 1;
+                  if (reqSize == 1)// 2 byte read
+                    begin
+                      readData[7:0] = ram_io_r_data;
+                      rdrAddr = addr;
+                      oldTA = TA;
+                      newRcounter = 0;
+                    end
+                  else if (reqSize == 2)// 4 byte read
+                    begin
+                      readData[23:16] = ram_io_r_data;
+                      ram_io_addr = addr+2;
+                    end
+                end
 
-	always @ (posedge clk)
-	begin
-		// Write
-		if (we)
-			ram[addr] <= data;
+              // Cycle 3
+              else if (Rcounter == 3)
+                begin
+                  newRcounter = Rcounter + 1;
+                  if (reqSize == 2)// 4 byte read
+                    begin
+                      readData[15:8] = ram_io_r_data;
+                      ram_io_addr = addr+3;
+                    end
+                end
 
-		addr_reg <= addr;
-	end
-
-	// Continuous assignment implies read returns NEW data.
-	// This is the natural behavior of the TriMatrix memory
-	// blocks in Single Port mode.  
-	assign q = ram[addr_reg];
-
+              // Cycle 4
+              else if (Rcounter == 4)
+                begin
+                  newRcounter = Rcounter + 1;
+                  if (reqSize == 2)// 4 byte read
+                    begin
+                      readData[7:0] = ram_io_r_data;
+                      rdrAddr = addr;
+                      oldTA = TA;
+                      newRcounter = 0;
+                    end
+                end
+              Rcounter = newRcounter;
+            end
+          else
+            begin
+              // Start Write
+              if (Rcounter == 0 && oldTA != TA)
+                begin
+                  if (addr == 2049)
+                    begin
+                      $display("%c", writeData);
+                    end
+                  newRcounter = Rcounter + 1;
+                  ram_io_addr = addr;
+                  ram_io_w_we = 1;
+                  `dbg($display("Write: %d to %h", writeData, ram_io_addr));
+                  if (reqSize == 0)// 1 byte write
+                    begin
+                      ram_io_w_data = writeData[7:0];
+                      wrrAddr = ram_io_addr;
+                      oldTA = TA;
+                      newRcounter = 0;
+                    end
+                  else if (reqSize == 1)// 2 byte write
+                    begin
+                      ram_io_w_data = writeData[15:8];
+                    end
+                  else if (reqSize == 2)// 4 byte write
+                    begin
+                      ram_io_w_data = writeData[31:24];
+                    end
+                end
+              
+              // Cycle 1
+              if (Rcounter == 1)
+                begin
+                  newRcounter = Rcounter + 1;
+                  ram_io_addr = addr+1;
+                  if (reqSize == 1)// 2 byte write
+                    begin
+                      ram_io_w_data = writeData[7:0];
+                      wrrAddr = addr;
+                      oldTA = TA;
+                      newRcounter = 0;
+                    end
+                  else if (reqSize == 2)// 4 byte write
+                    begin
+                      ram_io_w_data = writeData[23:16];
+                    end
+                end
+              
+              // Cycle 2
+              if (Rcounter == 2)
+                begin
+                  newRcounter = Rcounter + 1;
+                  ram_io_addr = addr+2;
+                  if (reqSize == 2)// 4 byte write
+                    begin
+                      ram_io_w_data = writeData[15:8];
+                    end
+                end
+              
+              // Cycle 3
+              if (Rcounter == 3)
+                begin
+                  newRcounter = Rcounter + 1;
+                  ram_io_addr = addr+3;
+                  if (reqSize == 2)// 4 byte write
+                    begin
+                      ram_io_w_data = writeData[7:0];
+                      wrrAddr = addr;
+                      oldTA = TA;
+                      newRcounter = 0;
+                    end
+                end
+              Rcounter = newRcounter;
+            end
+        end
+      else
+        begin
+          Rcounter = 0;
+        end
+    end
+  
 endmodule
 
 
-module RISCV(
-    input clk,
-	 //output reg [31:0]instr,
-	 //output reg [6:0]op,
-	 output wire [2:0]PCo,
-	 output reg blLed,
-    //output reg vga_v,
-    //output reg vga_h,
-    //output reg[7:0] vga_r,
-    //output reg[7:0] vga_g,
-    //output reg[7:0] vga_b,
-    output ram
+
+module RISCVCore(
+  `ifndef edpg
+  input CLK
+  `endif
 );
+  `ifdef edpg
+  reg CLK = 0;// System clock
+  `endif
   
-  reg [7:0]ram[0:34000];
+  // Cpu registers
+  reg [31:0]registers[0:31];
+  reg [31:0]counter = 0;
+  reg [31:0]newCounter = 0;
   
-  
-  //reg [31:0]registers[0:31];
-  
-  reg [31:0] Rdata = 0;
-  reg [4:0] Raddr = 0;
-  reg Rwe = 0;
-  wire [31:0]Rq;
-  single_port_ram_with_init #(32, 5) regs(Rdata, Raddr, Rwe, clk, Rq);
-  
-  reg [7:0] cycleCounter = 0;
-  reg [31:0]PC = 0;
-  //assign blLed = 0;
-  assign PCo = PC[4:2];
+  reg [31:0]PC = 32'h00000000;
+  reg [31:0]newPC = PC;
   
   // Instr Decode data
   reg [31:0]instr = 0;
@@ -91,13 +615,13 @@ module RISCV(
   reg [4:0]rs2 = 0;
   reg [11:0]ItypeIMM = 0;
   reg [20:0]JtypeIMM = 0;
-  reg [11:0]BtypeIMM = 0;
-  reg [31:0]UtypeIMM = 0;// 12bit offset and extended!
-  reg [11:0]BtypeIMMBranch = 0;
+  reg [11:0]StypeIMM = 0;
+  reg [31:0]UtypeIMM = 0;
+  reg [12:0]BtypeIMMBranch = 0;
   
   reg [31:0]ItypeIMMSignExtended = 0;
   reg [31:0]JtypeIMMSignExtended = 0;
-  reg [31:0]BtypeIMMSignExtended = 0;
+  reg [31:0]StypeIMMSignExtended = 0;
   reg [31:0]BtypeIMMBranchSignExtended = 0;
   
   reg [31:0]rdReg = 0;
@@ -106,151 +630,181 @@ module RISCV(
   
   reg validInstr = 0;
   
-  `define stringPos 804
-  `define intPos 800
+  reg EBREAKcalled = 0;
+  // Debugging:
+  reg doneExecutingInstr = 0;
   
-  reg clk1hz = 0;
-  reg [63:0]clkCount = 0;
+  // Ram bus
+  // for 8 bit
+  /*wire [7:0]ram_io_w_data;
+  wire [`ramAddrSize:0]ram_io_addr;
+  wire [7:0]ram_io_r_data;
+  wire ram_io_w_we;*/
   
-  always @(posedge clk)
-  begin
-	clkCount = clkCount + 1;
-	if (clkCount > 500000)
-	begin
-		clk1hz = !clk1hz;
-		clkCount = 0;
-	end
-  end
+  // for 32 bit
+  wire [31:0]ram_io_w_data;
+  wire [`ramAddrSize:0]ram_io_addr;
+  wire [31:0]ram_io_r_data;
+  wire ram_io_w_we;
   
-  integer i;
+  reg [`mmuAddrSize:0]addr = 0;
+  reg [1:0]reqSize = 0;// 0=1b 1=2b 3=4b
+  reg [31:0]writeData = 0;
+  wire [31:0]readData;
+  reg rw = 0;// 0=read; 1=write
+  wire [`mmuAddrSize:0]rdrAddr;
+  wire [`mmuAddrSize:0]wrrAddr;
+  reg activate = 0;
+  reg TA = 0;
+  wire oldTA;
+  
+  RISCVBasicMMU32 rvmmu(
+    CLK,
+    
+    ram_io_w_data,
+    ram_io_addr,
+    ram_io_r_data,
+    ram_io_w_we,
+    
+    addr,
+    reqSize,
+    writeData,
+    readData,
+    rw,
+    rdrAddr,
+    wrrAddr,
+    
+    activate,
+    TA,
+    oldTA
+  );
+  
+  single_port_ram #(.DATA_WIDTH(32), .ADDR_WIDTH(`ramAddrSize+1)) ram(
+    ram_io_w_data,
+    ram_io_addr,
+    ram_io_w_we,
+    CLK,
+    ram_io_r_data
+  );
   
   initial begin
-    for (i = 0; i < 34001; i = i+1)
-      begin
-        ram[i] = 0;
-      end
+    `ifdef edpg
+    $dumpfile("dump.vcd");
+    $dumpvars;
+    `endif
     
-    /*for (i = 0; i < 32; i = i+1)
+    for (int i = 0; i < 32; i++)
       begin
         registers[i] = 0;
-      end*/
-    PC = 32'h000001ec;
-    /*ram[0] = 8'h00;// addi  a0, a0, 1
-    ram[1] = 8'h15;
-    ram[2] = 8'h05;
-    ram[3] = 8'h13;
-	
-	 ram[4] = 8'hff;// jal   x1, begin
-    ram[5] = 8'h5f;
-    ram[6] = 8'hf0;
-    ram[7] = 8'hef;*/
-    /*ram[4] = 8'h01;// li    a5, 24
-    ram[5] = 8'h80;
-    ram[6] = 8'h07;
-    ram[7] = 8'h93;
-    
-    ram[8] = 8'h00;// sw    a0, 0(a5)
-    ram[9] = 8'ha7;
-    ram[10] = 8'ha0;
-    ram[11] = 8'h23;
-    
-    ram[12] = 8'hff;// jal   x1, begin
-    ram[13] = 8'h5f;
-    ram[14] = 8'hf0;
-    ram[15] = 8'hef;*/
-    //registers[2] = 992;
-    
+      end
+    `ifdef edpg
+    registers[2] = 32'h0000ffff;
+    `else
+    registers[2] = 2800000;
+    `endif
+    `ifdef edpg
+    for (int i = 0; i < 100; i = i+1)
+      begin
+        #10 CLK = 1;
+        #10 CLK = 0;
+      end
+    `endif
+    EBREAKcalled = 0;
   end
   
-  always @ (posedge clk)
+  always @(posedge CLK)
     begin
-    //registers[0] = 0;
-    //$display("cc: %d", cycleCounter);
-      case (cycleCounter)
-        0: begin
-          instr = {ram[PC], ram[PC+1], ram[PC+2], ram[PC+3]};
+      
+      if (counter == 0 && `waitforram)// Make sure no memory operation is busy before continuing
+        begin
+          addr = PC;
+          reqSize = 2;
+          rw = 0;
+          activate = 1;
+          TA = ~oldTA;
+          newCounter = counter + 1;
+        end
+        
+      if (counter == 1 && `waitforram)
+        begin
+          instr = {readData[7:0], readData[15:8], readData[23:16], readData[31:24]};
           
-          op = instr[6:0];
-          funct3 = instr[14:12];
-          funct7 = instr[31:25];
+          op <= instr[6:0];
+          funct3 <= instr[14:12];
+          funct7 <= instr[31:25];
           rd = instr[11:7];
           rs1 = instr[19:15];
           rs2 = instr[24:20];
           ItypeIMM = instr[31:20];
           JtypeIMM = {instr[31], instr[19:12], instr[20], instr[30:21], 1'b0};
-          BtypeIMM = {instr[31:25], instr[11:7]};
-          UtypeIMM[31:12] = instr[31:12];// 12bit offset and extended!
+          StypeIMM = {instr[31:25], instr[11:7]};
+          UtypeIMM[31:12] = instr[31:12];// 12bit offset
           UtypeIMM[11:0] = 0;
           BtypeIMMBranch = {instr[31], instr[7], instr[30:25], instr[11:8], 1'b0};
           
           ItypeIMMSignExtended = {{20{ItypeIMM[11]}}, ItypeIMM};
           JtypeIMMSignExtended = {{11{JtypeIMM[20]}}, JtypeIMM};
-          BtypeIMMSignExtended = {{20{BtypeIMM[11]}}, BtypeIMM};
-          BtypeIMMBranchSignExtended = {{20{BtypeIMMBranch[11]}}, BtypeIMMBranch};
-			 
-			 Raddr = rd;
-			 Rwe = 0;
+          StypeIMMSignExtended = {{20{StypeIMM[11]}}, StypeIMM};
+          BtypeIMMBranchSignExtended = {{20{BtypeIMMBranch[12]}}, BtypeIMMBranch};
+          `dbg($display("instr: %h", instr));
+          `dbg($display("PC: %d instr: %b op: %h funct3: %h rd: %d rs1: %d rs2: %d ItypeIMM: %d JtypeIMM: %d StypeIMM: %d Bsx: %d \n		x1: %d x2: %d a0(x10): %d",
+                        PC, instr, op, funct3, rd, rs1, rs2, ItypeIMM, JtypeIMM, StypeIMM, $signed(BtypeIMMBranchSignExtended), registers[1], registers[2], registers[10]));
+          
+          
+          rdReg = registers[rd];
+          rs1Reg = registers[rs1];
+          rs2Reg = registers[rs2];
+          newCounter = 2;
         end
-        1: begin
-          rdReg = Rq;
-			 Raddr = rs1;
-          //$display("RD before(%d): %d", rd, rdReg);
-        end
-        2: begin
-          rs1Reg = Rq;
-			 Raddr = rs2;
-          //$display("RS1 before(%d): %d", rs1, rs1Reg);
-        end
-        3: begin
-          rs2Reg = Rq;
-          //$display("RS2 before(%d): %d", rs2, rs2Reg);
-        end
-        4: begin
-          //$display("PC: %d instr: %b op: %h funct3: %h rd: %d rs1: %d rs2: %d ItypeIMM: %d JtypeIMM: %d BtypeIMM: %d X1: %d X14(a4): %d X15(a5): %d X8: %d ram[32772r]: %d ram[int]: %d",
-          //         PC, instr, op, funct3, rd, rs1, rs2, ItypeIMM, JtypeIMM, BtypeIMM, registers[1], registers[14], registers[15], registers[8],
-          //         {ram[6004]}, {ram[`intPos], ram[`intPos +1], ram[`intPos +2], ram[`intPos +3]});
-          //$display("string @ stringPos: %s", {ram[`stringPos ], ram[`stringPos +1], ram[`stringPos +2], ram[`stringPos +3], ram[`stringPos +4], ram[`stringPos +5], ram[`stringPos +6], ram[`stringPos +7], ram[`stringPos +8], ram[`stringPos +9], ram[`stringPos +10]});
+      
+      if (counter == 2)
+        begin
+          
+          newPC = PC + 4;
+          validInstr = 0;
+          newCounter = 3;
+          `dbg($display("rdReg: %d rs1Reg: %d rs2Reg: %d", rdReg, rs1Reg, rs2Reg));
           
           if (op == 7'b0010011)// Math immediate
             begin
               if (funct3 == 3'b000)// ADDI
                 begin
-                  $display("ADDI");
+                  `dbg($display("ADDI"));
                   rdReg = rs1Reg+ItypeIMMSignExtended;
                   
                   validInstr = 1;
                 end
               else if (funct3 == 3'b010)// SLTI
                 begin
-                  $display("SLTI");
+                  `dbg($display("SLTI"));
                   rdReg = ($signed(rs1Reg) < $signed(ItypeIMMSignExtended));
                   
                   validInstr = 1;
                 end
               else if (funct3 == 3'b011)// SLTIU
                 begin
-                  $display("SLTIU");
+                  `dbg($display("SLTIU"));
                   rdReg = (rs1Reg<ItypeIMMSignExtended);
                   
                   validInstr = 1;
                 end
               else if (funct3 == 3'b100)// XORI
                 begin
-                  $display("XORI");
+                  `dbg($display("XORI"));
                   rdReg = (rs1Reg ^ ItypeIMMSignExtended);
                   
                   validInstr = 1;
                 end
               else if (funct3 == 3'b110)// ORI
                 begin
-                  $display("ORI");
+                  `dbg($display("ORI"));
                   rdReg = (rs1Reg | ItypeIMMSignExtended);
                   
                   validInstr = 1;
                 end
               else if (funct3 == 3'b111)// ANDI
                 begin
-                  $display("ANDI");
+                  `dbg($display("ANDI"));
                   rdReg = (rs1Reg & ItypeIMMSignExtended);
                   
                   validInstr = 1;
@@ -259,28 +813,25 @@ module RISCV(
                 begin
                   if (funct7 == 7'b0000000)
                     begin
-                      $display("SLLI");
+                      `dbg($display("SLLI"));
                       rdReg = (rs1Reg << ItypeIMMSignExtended[4:0]);
 
                       validInstr = 1;
                     end
                 end
-              else if (funct3 == 3'b101)// SRLI
+              else if (funct3 == 3'b101)
                 begin
-                  if (funct7 == 7'b0000000)
+                  if (funct7 == 7'b0000000)// SRLI
                     begin
-                      $display("SRLI");
+                      `dbg($display("SRLI"));
                       rdReg = (rs1Reg >> ItypeIMMSignExtended[4:0]);
 
                       validInstr = 1;
                     end
-                end
-              else if (funct3 == 3'b101)// SRAI
-                begin
-                  if (funct7 == 7'b0100000)
+                  else if (funct7 == 7'b0100000)// SRAI
                     begin
-                      $display("SRAI");
-                      rdReg = (rs1Reg >>> ItypeIMMSignExtended[4:0]);
+                      `dbg($display("SRAI"));
+                      rdReg = ($signed(rs1Reg) >>> ItypeIMMSignExtended[4:0]);
 
                       validInstr = 1;
                     end
@@ -293,14 +844,14 @@ module RISCV(
                 begin
                   if (funct7 == 7'b0000000)// ADD
                 	begin
-                      $display("ADD");
+                      `dbg($display("ADD"));
                       rdReg = rs1Reg+rs2Reg;
 
                       validInstr = 1;
                     end
                   else if (funct7 == 7'b0100000)// SUB
                 	begin
-                      $display("SUB");
+                      `dbg($display("SUB"));
                       rdReg = rs1Reg-rs2Reg;
 
                       validInstr = 1;
@@ -310,7 +861,7 @@ module RISCV(
                 begin
                   if (funct7 == 7'b0000000)// SLT
                 	begin
-                      $display("SLT");
+                      `dbg($display("SLT"));
                       rdReg = ($signed(rs1Reg) < $signed(rs2Reg));
 
                       validInstr = 1;
@@ -320,7 +871,7 @@ module RISCV(
                 begin
                   if (funct7 == 7'b0000000)// SLTU
                 	begin
-                      $display("SLTU");
+                      `dbg($display("SLTU"));
                       rdReg = (rs1Reg < rs2Reg);
 
                       validInstr = 1;
@@ -330,7 +881,7 @@ module RISCV(
                 begin
                   if (funct7 == 7'b0000000)// SLL
                 	begin
-                      $display("SLL");
+                      `dbg($display("SLL"));
                       rdReg = (rs1Reg << rs2Reg[4:0]);
 
                       validInstr = 1;
@@ -340,18 +891,15 @@ module RISCV(
                 begin
                   if (funct7 == 7'b0000000)// SRL
                 	begin
-                      $display("SRL");
+                      `dbg($display("SRL"));
                       rdReg = (rs1Reg >> rs2Reg[4:0]);
 
                       validInstr = 1;
                     end
-                end
-              else if (funct3 == 3'b101)
-                begin
                   if (funct7 == 7'b0100000)// SRA
                 	begin
-                      $display("SRA");
-                      rdReg = (rs1Reg >>> rs2Reg[4:0]);
+                      `dbg($display("SRA"));
+                      rdReg = ($signed(rs1Reg) >>> rs2Reg[4:0]);
 
                       validInstr = 1;
                     end
@@ -360,7 +908,7 @@ module RISCV(
                 begin
                   if (funct7 == 7'b0000000)// XOR
                 	begin
-                      $display("XOR");
+                      `dbg($display("XOR"));
                       rdReg = (rs1Reg ^ rs2Reg);
 
                       validInstr = 1;
@@ -370,7 +918,7 @@ module RISCV(
                 begin
                   if (funct7 == 7'b0000000)// OR
                 	begin
-                      $display("OR");
+                      `dbg($display("OR"));
                       rdReg = (rs1Reg | rs2Reg);
 
                       validInstr = 1;
@@ -380,7 +928,7 @@ module RISCV(
                 begin
                   if (funct7 == 7'b0000000)// AND
                 	begin
-                      $display("AND");
+                      `dbg($display("AND"));
                       rdReg = (rs1Reg & rs2Reg);
 
                       validInstr = 1;
@@ -392,60 +940,60 @@ module RISCV(
             begin
               if (funct3 == 3'b000)// BEQ
                 begin
-                  $display("BEQ");
+                  `dbg($display("BEQ"));
                   if (rs1Reg == rs2Reg)
                     begin
-                      PC = PC + BtypeIMMBranchSignExtended - 4;
+                      newPC = PC + BtypeIMMBranchSignExtended;
                     end
                   
                   validInstr = 1;
                 end
               else if (funct3 == 3'b001)// BNE
                 begin
-                  $display("BNE");
+                  `dbg($display("BNE"));
                   if (rs1Reg != rs2Reg)
                     begin
-                      PC = PC + BtypeIMMBranchSignExtended - 4;
+                      newPC = PC + BtypeIMMBranchSignExtended;
                     end
                   
                   validInstr = 1;
                 end
               else if (funct3 == 3'b100)// BLT
                 begin
-                  $display("BLT");
+                  `dbg($display("BLT"));
                   if ($signed(rs1Reg) < $signed(rs2Reg))
                     begin
-                      PC = PC + BtypeIMMBranchSignExtended - 4;
+                      newPC = PC + BtypeIMMBranchSignExtended;
                     end
                   
                   validInstr = 1;
                 end
               else if (funct3 == 3'b101)// BGE
                 begin
-                  $display("BGE");
+                  `dbg($display("BGE"));
                   if ($signed(rs1Reg) >= $signed(rs2Reg))
                     begin
-                      PC = PC + BtypeIMMBranchSignExtended - 4;
+                      newPC = PC + BtypeIMMBranchSignExtended;
                     end
                   
                   validInstr = 1;
                 end
               else if (funct3 == 3'b110)// BLTU
                 begin
-                  $display("BLTU");
+                  `dbg($display("BLTU"));
                   if (rs1Reg < rs2Reg)
                     begin
-                      PC = PC + BtypeIMMBranchSignExtended - 4;
+                      newPC = PC + BtypeIMMBranchSignExtended;
                     end
                   
                   validInstr = 1;
                 end
               else if (funct3 == 3'b111)// BGEU
                 begin
-                  $display("BGEU");
+                  `dbg($display("BGEU"));
                   if (rs1Reg >= rs2Reg)
                     begin
-                      PC = PC + BtypeIMMBranchSignExtended - 4;
+                      newPC = PC + BtypeIMMBranchSignExtended;
                     end
                   
                   validInstr = 1;
@@ -454,10 +1002,9 @@ module RISCV(
           
           else if (op == 7'b1101111)// JAL
             begin
-              $display("JAL");
-              //PC = PC + {{21{JtypeIMM[10]}}, JtypeIMM[10:0]} - 4;
+              `dbg($display("JAL"));
               rdReg = PC + 4;
-              PC = PC + JtypeIMMSignExtended - 4;
+              newPC = PC + JtypeIMMSignExtended;
               
               validInstr = 1;
             end
@@ -466,10 +1013,9 @@ module RISCV(
             begin
               if (funct3 == 3'b000)
                 begin
-                  $display("JALR");
-                  //PC = PC + {{21{JtypeIMM[10]}}, JtypeIMM[10:0]} - 4;
+                  `dbg($display("JALR"));
                   rdReg = PC + 4;
-                  PC = rs1Reg + {ItypeIMMSignExtended[31:1], 1'b0} - 4;
+                  newPC = (rs1Reg + ItypeIMMSignExtended);// todo fix me fixme
 
                   validInstr = 1;
                 end
@@ -479,26 +1025,40 @@ module RISCV(
             begin
               if (funct3 == 3'b010)// SW
                 begin
-                  $display("SW");
-                  ram[BtypeIMMSignExtended+rs1Reg+3] = 	rs2Reg[7:0];
-                  ram[BtypeIMMSignExtended+rs1Reg+2] = 	rs2Reg[15:8];
-                  ram[BtypeIMMSignExtended+rs1Reg+1] = 	rs2Reg[23:16];
-                  ram[BtypeIMMSignExtended+rs1Reg] = 	rs2Reg[31:24];
+                  `dbg($display("SW"));
+                  addr = StypeIMMSignExtended+rs1Reg;
+                  reqSize = 2;
+                  rw = 1;
+                  writeData = {rs2Reg[7:0], rs2Reg[15:8], rs2Reg[23:16], rs2Reg[31:24]};
+                  activate = 1;
+                  TA = ~oldTA;
+                  //newCounter = counter + 1;
 
                   validInstr = 1;
                 end
               else if (funct3 == 3'b001)// SH
                 begin
-                  $display("SH");
-                  ram[BtypeIMMSignExtended+rs1Reg+1] = 	rs2Reg[7:0];
-                  ram[BtypeIMMSignExtended+rs1Reg] = 	rs2Reg[15:8];
+                  `dbg($display("SH"));
+                  addr = StypeIMMSignExtended+rs1Reg;
+                  reqSize = 1;
+                  rw = 1;
+                  writeData = {rs2Reg[7:0], rs2Reg[15:8]};
+                  activate = 1;
+                  TA = ~oldTA;
+                  //newCounter = counter + 1;
 
                   validInstr = 1;
                 end
               else if (funct3 == 3'b000)// SB
                 begin
-                  $display("SB");
-                  ram[BtypeIMMSignExtended+rs1Reg] = 	rs2Reg[7:0];
+                  `dbg($display("SB"));
+                  addr = StypeIMMSignExtended+rs1Reg;
+                  reqSize = 0;
+                  rw = 1;
+                  writeData = rs2Reg[7:0];
+                  activate = 1;
+                  TA = ~oldTA;
+                  //newCounter = counter + 1;
 
                   validInstr = 1;
                 end
@@ -508,43 +1068,61 @@ module RISCV(
             begin
               if (funct3 == 3'b010)// LW
                 begin
-                  $display("LW");
-                  rdReg = {ram[ItypeIMMSignExtended+rs1Reg], 
-                                   ram[ItypeIMMSignExtended+rs1Reg+1], 
-                                   ram[ItypeIMMSignExtended+rs1Reg+2], 
-                                   ram[ItypeIMMSignExtended+rs1Reg+3]};
+                  `dbg($display("LW"));
+                  addr = ItypeIMMSignExtended+rs1Reg;
+                  reqSize = 2;
+                  rw = 0;
+                  activate = 1;
+                  TA = ~oldTA;
+                  newCounter = 4;
 
                   validInstr = 1;
                 end
               else if (funct3 == 3'b001)// LH
                 begin
-                  $display("LH");
-                  rdReg = {{16{ram[ItypeIMMSignExtended+rs1Reg][7]}}, 
-                                   ram[ItypeIMMSignExtended+rs1Reg], 
-                                   ram[ItypeIMMSignExtended+rs1Reg+1]};
+                  `dbg($display("LH"));
+                  addr = ItypeIMMSignExtended+rs1Reg;
+                  reqSize = 1;
+                  rw = 0;
+                  activate = 1;
+                  TA = ~oldTA;
+                  newCounter = 4;
 
                   validInstr = 1;
                 end
               else if (funct3 == 3'b000)// LB
                 begin
-                  $display("LB");
-                  rdReg = {{24{ram[ItypeIMMSignExtended+rs1Reg][7]}}, 
-                                   ram[ItypeIMMSignExtended+rs1Reg]};
+                  `dbg($display("LB"));
+                  addr = ItypeIMMSignExtended+rs1Reg;
+                  reqSize = 0;
+                  rw = 0;
+                  activate = 1;
+                  TA = ~oldTA;
+                  newCounter = 4;
 
                   validInstr = 1;
                 end
               else if (funct3 == 3'b101)// LHU
                 begin
-                  $display("LHU");
-                  rdReg = {ram[ItypeIMMSignExtended+rs1Reg], 
-                                   ram[ItypeIMMSignExtended+rs1Reg+1]};
+                  `dbg($display("LHU"));
+                  addr = ItypeIMMSignExtended+rs1Reg;
+                  reqSize = 1;
+                  rw = 0;
+                  activate = 1;
+                  TA = ~oldTA;
+                  newCounter = 4;
 
                   validInstr = 1;
                 end
               else if (funct3 == 3'b100)// LBU
                 begin
-                  $display("LBU");
-                  rdReg = ram[ItypeIMMSignExtended+rs1Reg];
+                  `dbg($display("LBU"));
+                  addr = ItypeIMMSignExtended+rs1Reg;
+                  reqSize = 0;
+                  rw = 0;
+                  activate = 1;
+                  TA = ~oldTA;
+                  newCounter = 4;
 
                   validInstr = 1;
                 end
@@ -552,7 +1130,7 @@ module RISCV(
           
           else if (op == 7'b0110111)// LUI
             begin
-              $display("LUI");
+              `dbg($display("LUI"));
               rdReg[31:12] = UtypeIMM[31:12];
               rdReg[11:0] = 0;
 
@@ -561,46 +1139,110 @@ module RISCV(
           
           else if (op == 7'b0010111)// AUIPC
             begin
-              $display("AUIPC");
-              PC = PC + UtypeIMM;
-              rdReg = PC;
+              `dbg($display("AUIPC"));
+              rdReg = PC + UtypeIMM;
 
               validInstr = 1;
             end
           
-          if (!validInstr)
+          else if (instr == 32'b00000000000100000000000001110011)// EBREAK
             begin
-              $display("INV");
+              `dbgINV($display("EBREAK from 0x%h", PC));
+              EBREAKcalled = 1;
+              
+              validInstr = 1;
+            end
+          else if (instr == 32'b00000000000000000000000001110011)// ECALL
+            begin
+              `dbgINV($display("ECALL from 0x%h, IGNORED!", PC));
+              
+              validInstr = 1;
             end
           
-          PC = PC+4;
-          //registers[0] = 0;
-          validInstr = 0;
-          //$display("");
-			 Raddr = 10;
+          else if (op == 7'b0001111)
+            begin
+              if (funct3 == 3'b000)// FENCE
+                begin
+                  `dbg($display("FENCE"));
+                  // Implemented as NOP because this core currently doesn't require it.
+
+                  validInstr = 1;
+                end
+              else if (funct3 == 3'b001)// FENCE.I
+                begin
+                  `dbg($display("FENCE.I"));
+                  // Implemented as NOP because this core currently doesn't require it.
+
+                  validInstr = 1;
+                end
+            end
+          
+          if (!validInstr)// Instruction not found, print message and continue
+            begin
+              `dbgINV($display("INV PC: %d(0x%h) instr: %h", PC, PC, instr));
+            end
+          
         end
-        5: begin
-			 blLed = Rq[0];
-			 Raddr = rd;
-          //registers[rd] = rdReg;
-			 Rdata = rdReg;
-			 Rwe = 1;
-          //$display("RD after(%d): %d", rd, rdReg);
+        
+      if (counter == 3)
+        begin
+          registers[rd] = rdReg;
+          `dbg($display("New rd: %d", rdReg));
+          registers[0] = 0;
+          doneExecutingInstr = ~doneExecutingInstr;
+          newCounter = 0;
         end
-        /*6: begin
-          //registers[rs1] = rs1Reg;
-          //$display("RS1 after(%d): %d", rs1, rs1Reg);
-        end*/
-        6: begin
-		  Raddr = 0;
-        Rdata = 0;
-		  Rwe = 1;
-          //registers[rs2] = rs2Reg;
-          //$display("RS2 after(%d): %d", rs2, rs2Reg);
-          cycleCounter = -1;
-        end
-      endcase
-      cycleCounter = cycleCounter + 1;
+      
+      if (counter == 4 && `waitforram)
+        begin
+          newCounter = 0;
+          if (op == 7'b0000011)// Load instructions
+            begin
+              if (funct3 == 3'b010)// LW
+                begin
+                  //`dbg($display("LW late"));
+                  rdReg = {readData[7:0], readData[15:8], readData[23:16], readData[31:24]};
+                end
+              else if (funct3 == 3'b001)// LH
+                begin
+                  //`dbg($display("LH"));
+                  rdReg = {{16{readData[7]}}, 
+                           readData[7:0], 
+                           readData[15:8]};
+                end
+              else if (funct3 == 3'b000)// LB
+                begin
+                  //`dbg($display("LB"));
+                  rdReg = {{24{readData[7]}}, 
+                          readData[7:0]};
+                end
+              else if (funct3 == 3'b101)// LHU
+                begin
+                  //`dbg($display("LHU"));
+                  rdReg = {readData[7:0], readData[15:8]};
+                end
+              else if (funct3 == 3'b100)// LBU
+                begin
+                  //`dbg($display("LBU finish"));
+                  rdReg = readData[7:0];
+                end
+              else
+                begin
+                  `dbgINV($display("INV Second Stage Instr: %d(0x%h) instr: %h", PC, PC, instr));
+                end
+            end
+          else
+            begin
+              `dbgINV($display("INV Second Stage Instr: %d(0x%h) instr: %h", PC, PC, instr));
+            end
+          registers[rd] = rdReg;
+          `dbg($display("New rd(second stage): %d", rdReg));
+          doneExecutingInstr = ~doneExecutingInstr;
+      end
+      
+      counter = newCounter;
+      PC = newPC;
     end
   
 endmodule
+
